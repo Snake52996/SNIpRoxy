@@ -13,7 +13,6 @@
 #include <time.h>
 #include <stdio.h>
 #include <unistd.h>
-/*gnutls_x509_crt_privkey_sign*/
 struct keypair{
     RAII _;
     char* hostname;
@@ -25,7 +24,6 @@ struct certificate_table{
     HashTable table;
 };
 unsigned int keypair_key_hash(const void* key);
-int keypair_key_compare(const void* lhs, const void* rhs);
 void certificate_table_init(struct certificate_table* table, size_t slots);
 struct keypair* certificate_table_prepare(struct certificate_table* table, char* name);
 #endif

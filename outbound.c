@@ -52,23 +52,6 @@ void callback(void *arg, int status, int timeouts, struct ares_addrinfo *result)
     ListNode* node = parameter->attached_connection_node;
     struct connecting_connection* c_connection = node->data;
     if(status == ARES_SUCCESS){
-        //char readable_address_buffer[INET6_ADDRSTRLEN];
-        //char* address_class;
-        //void* address;
-        //printf("%s:\n", result->name);
-        //for(struct ares_addrinfo_node* current = result->nodes; current != NULL; current = current->ai_next){
-        //    if(current->ai_family == AF_INET){
-        //        address_class = "|- IPv4: ";
-        //        address = &(((struct sockaddr_in*)current->ai_addr)->sin_addr);
-        //    }else if(current->ai_family == AF_INET6){
-        //        address_class = "|- IPv6: ";
-        //        address = &(((struct sockaddr_in6*)current->ai_addr)->sin6_addr);
-        //    }else{
-        //        continue;
-        //    }
-        //    inet_ntop(current->ai_family, address, readable_address_buffer, INET6_ADDRSTRLEN);
-        //    printf("%s%s\n", address_class, readable_address_buffer);
-        //}
         struct dns_cache_item* entry = dns_cache_insert(
             &cache, parameter->hint, parameter->hint_type,
             c_connection->local_keypair->hostname, result->nodes
@@ -90,7 +73,6 @@ void* outbound_entry(void* arg){
     fd_set rset;
     fd_set wset;
     struct in_addr addr = { .s_addr = inet_addr("127.0.0.1") };
-    //struct in_addr addr = { .s_addr = inet_addr("114.114.114.114") };
     ares_channel channel;
     struct ares_options options = {
         .timeout = 8000,

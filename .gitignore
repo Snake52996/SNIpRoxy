@@ -3,3 +3,4 @@ test-*
 cert.cfg
 ca.tmpl
 .vscode
+build/
