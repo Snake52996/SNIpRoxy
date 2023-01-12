@@ -21,7 +21,7 @@ struct callback_parameter{
 static int pipe_to_next;
 static List outbound;
 static struct dns_cache cache;
-void proceed_connection(const struct dns_cache_item* entry, ListNode* connection_node){
+void proceed_connection(const struct dns_cache_entry* entry, ListNode* connection_node){
     char readable_address_buffer[INET6_ADDRSTRLEN];
     inet_ntop(
         entry->ai_family,
@@ -52,7 +52,7 @@ void callback(void *arg, int status, int timeouts, struct ares_addrinfo *result)
     ListNode* node = parameter->attached_connection_node;
     struct connecting_connection* c_connection = node->data;
     if(status == ARES_SUCCESS){
-        struct dns_cache_item* entry = dns_cache_insert(
+        struct dns_cache_entry* entry = dns_cache_insert(
             &cache, parameter->hint, parameter->hint_type,
             c_connection->local_keypair->hostname, result->nodes
         );
@@ -61,7 +61,6 @@ void callback(void *arg, int status, int timeouts, struct ares_addrinfo *result)
     }else{
         fprintf(
             stderr, "DNS failed for %s: %s\n", c_connection->local_keypair->hostname, ares_strerror(status));
-        //List_detach(&outbound, node);
     }
     free(arg);
 }
