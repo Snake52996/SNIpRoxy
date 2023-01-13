@@ -54,3 +54,6 @@ struct keypair* certificate_table_prepare(struct certificate_table* table, char*
     gnutls_x509_crt_deinit(cert);
     return kp_result;
 }
+void certificate_table_clear(struct certificate_table* table){
+    HashTable_clear(&table->table);
+}

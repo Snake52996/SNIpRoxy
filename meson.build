@@ -3,6 +3,7 @@ dependencies = [ dependency('gnutls'), dependency('c-ares', modules: ['c-ares::c
 executable(
     'snir',
     'main.c', 'inbound.c', 'outbound.c', 'server.c', 'connection.c', 'dns_cache.c', 'keypair.c', 'ca.c',
+    'thread_common.c',
     dependencies: dependencies, gnu_symbol_visibility: 'hidden'
 )
 dns_cache_test = executable(

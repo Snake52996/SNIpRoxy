@@ -1,9 +1,8 @@
-#define _GNU_SOURCE
+#include "thread_common.h"
 #include "inbound.h"
 #include "common.h"
 #include "connection.h"
 #include <baSe/list.h>
-#include <baSe/hashtable.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -14,24 +13,22 @@
 #include <string.h>
 #include <unistd.h>
 #include <gnutls/gnutls.h>
-#include <gnutls/x509.h>
-#include <gnutls/abstract.h>
 #include <assert.h>
-#include <sys/wait.h>
-#include <sys/stat.h>
 #include <pthread.h>
+#include <poll.h>
 static const char* DefaultPriorityString = "SECURE192:-VERS-ALL:+VERS-TLS1.2:+VERS-TLS1.3";
-List inbound;
-struct certificate_table certificate_table;
-bool session_lookup_comparator(const void* data, const void* rhs){
+static List inbound;
+static struct certificate_table certificate_table;
+static bool loop = true;
+static bool session_lookup_comparator(const void* data, const void* rhs){
     return *(gnutls_session_t*)data == ((struct inbound_connection*)rhs)->local_session;
 }
 static int cert_callback(
     gnutls_session_t session,
-    const gnutls_datum_t * req_ca_rdn,
-    int nreqs,
-    const gnutls_pk_algorithm_t * sign_algos,
-    int sign_algos_length,
+    [[maybe_unused]]const gnutls_datum_t * req_ca_rdn,
+    [[maybe_unused]]int nreqs,
+    [[maybe_unused]]const gnutls_pk_algorithm_t * sign_algos,
+    [[maybe_unused]]int sign_algos_length,
     gnutls_pcert_st ** pcert,
     unsigned int *pcert_length,
     gnutls_privkey_t * pkey
@@ -60,9 +57,23 @@ static int cert_callback(
         return 1;
     }
 }
+static int rpc_fd;
+static void handle_thread_call(){
+    int call_id;
+    read(rpc_fd, &call_id, sizeof(call_id));
+    switch(call_id){
+        case ThreadCallIDExit:
+            loop = false;
+            break;
+        default: break;
+    }
+}
 void* inbound_entry(void* arg){
+    printf("inbound: starting\n");
+    maskSignals();
     struct inbound_parameter* parameters = arg;
-    int optval = 1;
+    rpc_fd = parameters->common_parameters.rpc_fd;
+    static const int optval = 1;
     gnutls_certificate_credentials_t x509_cred;
     CHECK(gnutls_certificate_allocate_credentials(&x509_cred));
     gnutls_certificate_set_retrieve_function2(x509_cred, cert_callback);
@@ -78,13 +89,24 @@ void* inbound_entry(void* arg){
     setsockopt(listen_socket, SOL_SOCKET, SO_REUSEADDR, (void *) &optval, sizeof(int));
     if(bind(listen_socket, (struct sockaddr *) &server_address, sizeof(server_address)) == -1){
         perror("bind");
-        pthread_exit(NULL);
+        exit(EXIT_FAILURE);
     }
     listen(listen_socket, 1024);
     socklen_t client_length = sizeof(client_address);
     int connected_socket;
     int ret;
-    while(true){
+    int nfds;
+    ssize_t write_size;
+    struct pollfd fds[] = {
+        { .fd = rpc_fd, .events = POLLIN },
+        { .fd = listen_socket, .events = POLLIN }
+    };
+    static const size_t total_fds = sizeof(fds) / sizeof(*fds);
+    while(loop){
+        nfds = poll(fds, total_fds, -1);
+        if(nfds <= 0) continue;
+        if(fds[0].revents & POLLIN) handle_thread_call();
+        if(!(fds[1].revents & POLLIN)) continue;
         connected_socket = accept(listen_socket, (struct sockaddr *)&client_address, &client_length);
         struct inbound_connection* i_connection = createInboundConnection();
         CHECK(gnutls_init(&i_connection->local_session, GNUTLS_SERVER | GNUTLS_AUTO_REAUTH));
@@ -106,11 +128,16 @@ void* inbound_entry(void* arg){
         c_connection->status = ConnectionStatusConnecting;
         List_detach(&inbound, node);
         do{
-            ret = write(parameters->pipe_to_next, &node, sizeof(node));
-        }while(ret == -1 && (errno == EAGAIN || errno == EWOULDBLOCK));
+            write_size = write(parameters->pipe_to_next, &node, sizeof(ListNode*));
+        }while(write_size == -1 && (errno == EAGAIN || errno == EWOULDBLOCK));
         fprintf(stderr, "inbound: handed to next stage\n");
     }
     close(listen_socket);
+    close(parameters->pipe_to_next);
+    close(rpc_fd);
+    List_clear(&inbound);
+    certificate_table_clear(&certificate_table);
     gnutls_certificate_free_credentials(x509_cred);
+    printf("inbound: exiting\n");
     pthread_exit(NULL);
 }

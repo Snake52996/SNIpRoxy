@@ -1,11 +1,12 @@
-#include <errno.h>
-#define _GNU_SOURCE
+#include "thread_common.h"
 #include "server.h"
 #include "connection.h"
 #include <baSe/list.h>
 #include <sys/epoll.h>
 #include <gnutls/gnutls.h>
+#include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #define gnutlsCall(call,rtv,msg) do{\
     if(((rtv)=(call))<0){\
         fprintf(stderr,"%s: %s\n",(msg),gnutls_strerror(rtv));\
@@ -19,6 +20,7 @@ static const char* DefaultPriorityString =
     "NONE:+VERS-TLS1.3:+COMP-ALL:+AEAD:+CTYPE-X509:+AES-128-GCM:+AES-256-GCM:+CHACHA20-POLY1305"
     ":+GROUP-SECP256R1:+GROUP-SECP384R1:+GROUP-SECP521R1:+GROUP-X25519:+SIGN-RSA-PSS-RSAE-SHA256"
     ":+SIGN-RSA-PSS-RSAE-SHA384:+SIGN-RSA-PSS-RSAE-SHA512:+SIGN-EdDSA-Ed25519:%PROFILE_MEDIUM";
+static bool loop = true;
 static bool doHandshake(void* data, struct established_connection* e_connection, int epfd){
     fprintf(stderr, "server: handshaking for %s\n", e_connection->local_keypair->hostname);
     int rtv;
@@ -29,7 +31,7 @@ static bool doHandshake(void* data, struct established_connection* e_connection,
         e_connection->status = ConnectionStatusEstablished;
         struct epoll_event ev;
         ev.events = EPOLLERR | EPOLLIN;
-        ev.data.ptr = (uintmax_t)data | 1;
+        ev.data.ptr = (void*)((uintmax_t)data | 1);
         epoll_ctl(epfd, EPOLL_CTL_ADD, e_connection->local_socket, &ev);
         fprintf(stderr, "server: handshaking for %s succeed\n", e_connection->local_keypair->hostname);
     }else if(gnutls_error_is_fatal(rtv) != 0){
@@ -66,8 +68,8 @@ static bool receiveConnection(List* list, int receive_fd, int epfd, gnutls_certi
     ssize_t read_count;
     ListNode* node;
     while(true){
-        read_count = read(receive_fd, &node, sizeof(node));
-        if(read_count != sizeof(node)){
+        read_count = read(receive_fd, &node, sizeof(ListNode*));
+        if(read_count != sizeof(ListNode*)){
             if(read_count == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)){
                 return false;
             }else{
@@ -81,10 +83,24 @@ static bool receiveConnection(List* list, int receive_fd, int epfd, gnutls_certi
         initializeHandshake(node, node->data, xcred, epfd);
     }
 }
+static int rpc_fd;
+static void handle_thread_call(){
+    int call_id;
+    read(rpc_fd, &call_id, sizeof(call_id));
+    switch(call_id){
+        case ThreadCallIDExit:
+            loop = false;
+            break;
+        default: break;
+    }
+}
 void* server_entry(void* arg){
+    printf("server: starting\n");
+    maskSignals();
     int rtv;
     enum{ EpollEvents = 32, BufferSize = 0x10000 };
     struct server_parameter* parameters = arg;
+    rpc_fd = parameters->common_parameters.rpc_fd;
     List established;
     List disconnecting;
     List_initialize(&established);
@@ -97,16 +113,23 @@ void* server_entry(void* arg){
     ev.events = EPOLLHUP | EPOLLERR | EPOLLIN | EPOLLET;
     ev.data.fd = parameters->pipe_from_last;
     epoll_ctl(epfd, EPOLL_CTL_ADD, parameters->pipe_from_last, &ev);
+    ev.events = EPOLLIN;
+    ev.data.fd = rpc_fd;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, rpc_fd, &ev);
     char buffer[BufferSize];
     ssize_t read_size;
-    while(true){
+    while(loop){
         int fds = epoll_wait(epfd, events, EpollEvents, -1);
         for(int i = 0; i < fds; i++){
+            if(events[i].data.fd == rpc_fd){
+                handle_thread_call();
+                continue;
+            }
             if(events[i].data.fd == parameters->pipe_from_last){
                 receiveConnection(&established, parameters->pipe_from_last, epfd, xcred);
                 continue;
             }
-            ListNode* node = ((uintmax_t)events[i].data.ptr | 1) - 1;
+            ListNode* node = (ListNode*)(((uintmax_t)events[i].data.ptr | 1) - 1);
             struct established_connection* e_connection = node->data;
             if(e_connection->status == ConnectionStatusDisconnecting) continue;
             if(events[i].events & EPOLLERR){
@@ -167,8 +190,10 @@ void* server_entry(void* arg){
         }
         List_clear(&disconnecting);
     }
+    close(rpc_fd);
     close(epfd);
     List_clear(&established);
     gnutls_certificate_free_credentials(xcred);
+    printf("server: exiting\n");
     pthread_exit(NULL);
 }

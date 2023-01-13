@@ -1,6 +1,7 @@
 #include "outbound.h"
 #include "connection.h"
 #include "dns_cache.h"
+#include "thread_common.h"
 #include <baSe/list.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -21,6 +22,7 @@ struct callback_parameter{
 static int pipe_to_next;
 static List outbound;
 static struct dns_cache cache;
+static bool loop = true;
 void proceed_connection(const struct dns_cache_entry* entry, ListNode* connection_node){
     char readable_address_buffer[INET6_ADDRSTRLEN];
     inet_ntop(
@@ -40,14 +42,14 @@ void proceed_connection(const struct dns_cache_entry* entry, ListNode* connectio
     if(rtv == 0 || (rtv == -1 && errno == EINPROGRESS)){
         List_detach(&outbound, connection_node);
         do{
-            rtv = write(pipe_to_next, &connection_node, sizeof(connection_node));
+            rtv = write(pipe_to_next, &connection_node, sizeof(ListNode*));
         }while(rtv == -1 && (errno == EAGAIN || errno == EWOULDBLOCK));
     }else{
         fprintf(stderr, "outbound: failed when connecting to %s: %s\n", e_connection->local_keypair->hostname, strerror(errno));
         List_erase(&outbound, connection_node);
     }
 }
-void callback(void *arg, int status, int timeouts, struct ares_addrinfo *result){
+void callback(void *arg, int status, [[maybe_unused]] int timeouts, struct ares_addrinfo *result){
     struct callback_parameter* parameter = arg;
     ListNode* node = parameter->attached_connection_node;
     struct connecting_connection* c_connection = node->data;
@@ -64,8 +66,22 @@ void callback(void *arg, int status, int timeouts, struct ares_addrinfo *result)
     }
     free(arg);
 }
+static int rpc_fd;
+static void handle_thread_call(){
+    int call_id;
+    read(rpc_fd, &call_id, sizeof(call_id));
+    switch(call_id){
+        case ThreadCallIDExit:
+            loop = false;
+            break;
+        default: break;
+    }
+}
 void* outbound_entry(void* arg){
+    printf("outbound: starting\n");
+    maskSignals();
     struct outbound_parameter* parameters = arg;
+    rpc_fd = parameters->common_parameters.rpc_fd;
     pipe_to_next = parameters->pipe_to_next;
     List_initialize(&outbound);
     dns_cache_init(&cache, 64);
@@ -94,27 +110,35 @@ void* outbound_entry(void* arg){
     struct timeval tv;
     ListNode* hint;
     int hint_type;
-    while(true){
+    int fd_count_low_bound = (parameters->pipe_from_last > rpc_fd ? parameters->pipe_from_last : rpc_fd) + 1;
+    while(loop){
         tv.tv_sec = 6;
+        tv.tv_usec = 0;
         int fd_count = ares_fds(channel, &rset, &wset);
         FD_SET(parameters->pipe_from_last, &rset);
-        if(fd_count <= parameters->pipe_from_last) fd_count = parameters->pipe_from_last + 1;
+        FD_SET(rpc_fd, &rset);
+        if(fd_count < fd_count_low_bound) fd_count = fd_count_low_bound;
         int count = select(fd_count, &rset, &wset, NULL, &tv);
-        if(count == 0){
-            fprintf(stderr, "outbound: nothing happening\n");
-            continue;
+        if(count == 0) continue;
+        if(FD_ISSET(rpc_fd, &rset)){
+            --count;
+            handle_thread_call();
+            FD_CLR(rpc_fd, &rset);
         }
         if(FD_ISSET(parameters->pipe_from_last, &rset)){
             count--;
-            rtv = read(parameters->pipe_from_last, &node, sizeof(node));
-            if((rtv != sizeof(node) && rtv != -1) || (rtv == -1 && errno != EAGAIN && errno != EWOULDBLOCK)){
+            rtv = read(parameters->pipe_from_last, &node, sizeof(ListNode*));
+            if(
+                (rtv != sizeof(ListNode*) && rtv != -1)
+                || (rtv == -1 && errno != EAGAIN && errno != EWOULDBLOCK)
+            ){
                 fprintf(
                     stderr, "outbound: error reading from pipe after %ld bytes: %s\n",
                     rtv == -1 ? 0 : rtv, strerror(errno)
                 );
                 break;
             }
-            if(rtv == sizeof(node)){
+            if(rtv == sizeof(ListNode*)){
                 List_emplace_back(&outbound, node);
                 struct connecting_connection* c_connection = node->data;
                 fprintf(stderr, "outbound: received connection to %s\n", c_connection->local_keypair->hostname);
@@ -139,5 +163,11 @@ void* outbound_entry(void* arg){
     }
     ares_destroy(channel);
     ares_library_cleanup();
+    List_clear(&outbound);
+    dns_cache_clear(&cache);
+    close(pipe_to_next);
+    close(parameters->pipe_from_last);
+    close(rpc_fd);
+    printf("outbound: exiting\n");
     pthread_exit(NULL);
 }
