@@ -4,3 +4,4 @@ cert.cfg
 ca.tmpl
 .vscode
 build/
+.cache/
