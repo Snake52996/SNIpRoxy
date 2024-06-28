@@ -1,0 +1,15 @@
+# SNIProxy: a local proxy that prevent SNI from leaking domain names you visit
+SNIProxy will work on systems running reasonably recent Linux kernels
+## Building
+GnuTLS and c-ares are required to handle TLS and DNS  
+I found ConfigurationsPP and LogPP by changhaoxuan23 simple, clear and easy to use, they are required here to handle command line arguments and logging  
+Recent version of clang++ and libc++ are required to compile SNIProxy  
+CMakeLists.txt is ready for you to build if all dependencies are properly prepared
+## Using
+SNIProxy will listen on 127.0.0.1:443, you should redirect all connections to domain names that you want to hide here, for example by altering `/etc/hosts`  
+SNIProxy assumes a DNS server is up and running at 127.0.0.1:53, you have to set this up before SNIProxy can work. Plain DNS leaks domain names you are visiting anyway so you should probably setup something like a DoT/DoH (stub) DNS server or using SNIProxy simply makes no sense  
+Alternatively, you can specify static IP for every domain name redirected to SNIProxy, which eliminate the need of SNIProxy to resolve IP address using DNS. See also `snir --help`  
+Some signals are handled by SNIProxy:
+ - SIGHUP: reload configurations, namely CA keypair and static IP list
+ - SIGIO: show summary of current server status
+ - SIGUSR1: clear all caches (static IP list is **not** affected)

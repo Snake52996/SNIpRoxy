@@ -5,3 +5,5 @@ ca.tmpl
 .vscode
 build/
 .cache/
+cache.hosts
+run/
