@@ -12,6 +12,7 @@
 #include <list>
 #include <memory>
 #include <netinet/in.h>
+#include <ranges>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -33,16 +34,34 @@ static std::list<std::unique_ptr<Connection>> outbound_connections;
 // if the server should keep running
 static bool loop = true;
 
+static void summary() {
+  std::string buffer = std::format(
+    "\n====== begin summary ======\n  {} connection(s) in this stage:\n", outbound_connections.size()
+  );
+  for (const auto &connection : std::ranges::reverse_view(outbound_connections)) {
+    buffer += std::format(
+      "    connection " ConnectionIDFormatter " to {}\n", connection->identifier, connection->key->hostname
+    );
+  }
+  buffer += "======  end summary  ======\n";
+  logger->information("{}", buffer);
+}
+
 // thread call handlers
 static int  rpc_fd;
 static void handle_thread_call() {
-  int call_id;
+  ThreadCallID call_id;
   read(rpc_fd, &call_id, sizeof(call_id));
   switch (call_id) {
-  case ThreadCallIDExit:
+  case ThreadCallID::ThreadCallIDExit:
     loop = false;
     break;
-  default:
+  case ThreadCallID::ThreadCallIDReload:
+    break; // nothing to reload
+  case ThreadCallID::ThreadCallIDClearCache:
+    break; // nothing to clear
+  case ThreadCallID::ThreadCallIDSummary:
+    summary();
     break;
   }
 }
@@ -105,7 +124,7 @@ void outbound(outbound_parameter arguments) {
         // accept connection
         Connection *connection;
         read(arguments.pipe_from_last, &connection, sizeof(decltype(connection)));
-        logger->debug("received connection " ConnectionIDFormatter, connection->identifier);
+        logger->trace("received connection " ConnectionIDFormatter, connection->identifier);
         // attach it into the list
         outbound_connections.emplace_front(connection);
 #define skip_procedure                                                                                       \
@@ -197,7 +216,7 @@ void outbound(outbound_parameter arguments) {
       auto handshake_result = connection->handshake(*logger);
       loggers->performance_logger->trace("after call to handshake");
       if (handshake_result == ExecutionResult::Succeed) {
-        logger->information("connection " ConnectionIDFormatter " established", connection->identifier);
+        logger->debug("connection " ConnectionIDFormatter " established", connection->identifier);
         // detach instance from local list
         connection = iterator->release();
         outbound_connections.erase(iterator);
@@ -212,7 +231,7 @@ void outbound(outbound_parameter arguments) {
         );
         // hand over to next stage
         write(arguments.pipe_to_next, &connection, sizeof(decltype(connection)));
-        logger->debug(
+        logger->trace(
           "connection " ConnectionIDFormatter " handed over to next stage", connection->identifier
         );
       } else if (handshake_result == ExecutionResult::TryAgain) {

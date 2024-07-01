@@ -83,5 +83,11 @@ public:
       key, [](const Value &value) { return false; }, [&value]() { return std::move(value); }, false
     );
   }
+
+  // clear whole cache
+  void clear() {
+    std::lock_guard lock(this->mutex);
+    this->storage.clear();
+  }
 };
 #endif

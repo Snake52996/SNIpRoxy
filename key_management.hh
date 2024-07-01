@@ -29,8 +29,15 @@ public:
   // get a key pair that can be used to establish TLS connection with local client as host of hostname
   std::shared_ptr<KeyPair> get_key_pair(std::string_view hostname);
 
+  // redo CA keys loading procedure
+  void reload();
+  // clear internal cache
+  void clear();
+
 private:
-  static constexpr size_t                                       MaxKeypair = 128;
+  static constexpr size_t MaxKeypair = 128;
+
+  const std::filesystem::path                                  &key_path;
   gnutls_x509_crt_t                                             ca_cert{nullptr};
   gnutls_x509_privkey_t                                         ca_key{nullptr};
   Cache<std::string_view, std::shared_ptr<KeyPair>, MaxKeypair> key_pairs;

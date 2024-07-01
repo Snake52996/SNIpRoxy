@@ -296,22 +296,21 @@ std::shared_ptr<KeyPair> KeyManager::get_key_pair(std::string_view hostname) {
     }
   );
 }
-
-KeyManager::KeyManager(const std::filesystem::path &key_path) {
+void KeyManager::reload() {
   // check if the directory exist or is usable
-  logger->trace("constructing key manager on path {}", key_path.c_str());
-  auto directory_status = std::filesystem::status(key_path);
+  logger->trace("constructing key manager on path {}", this->key_path.c_str());
+  auto directory_status = std::filesystem::status(this->key_path);
   if (!std::filesystem::exists(directory_status)) {
-    logger->information("creating non-existing directory {}", key_path.c_str());
-    std::filesystem::create_directories(key_path);
+    logger->information("creating non-existing directory {}", this->key_path.c_str());
+    std::filesystem::create_directories(this->key_path);
   } else if (!std::filesystem::is_directory(directory_status)) {
-    logger->critical("{} exists but is not a directory!", key_path.c_str());
+    logger->critical("{} exists but is not a directory!", this->key_path.c_str());
     ::exit(EXIT_FAILURE);
   }
 
   // check if the keys exists
-  auto certificate_path = key_path / "ca-cert.pem";
-  auto private_key_path = key_path / "ca-key.pem";
+  auto certificate_path = this->key_path / "ca-cert.pem";
+  auto private_key_path = this->key_path / "ca-key.pem";
   if (!std::filesystem::exists(certificate_path) || !std::filesystem::exists(private_key_path)) {
     logger->information("key pair of CA does not exist or is incomplete, regenerating them...");
     try {
@@ -368,4 +367,10 @@ KeyManager::KeyManager(const std::filesystem::path &key_path) {
     fingerprints.at("SHA1"),
     fingerprints.at("SHA256")
   );
+
+  // clear cache
+  this->clear();
 }
+void KeyManager::clear() { this->key_pairs.clear(); }
+
+KeyManager::KeyManager(const std::filesystem::path &key_path) : key_path(key_path) { this->reload(); }

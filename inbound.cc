@@ -12,6 +12,7 @@
 #include <list>
 #include <memory>
 #include <netinet/in.h>
+#include <ranges>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -95,16 +96,34 @@ static int certificate_callback(
   return 0;
 }
 
+static void summary() {
+  std::string buffer = std::format(
+    "\n====== begin summary ======\n  {} connection(s) in this stage:\n", inbound_connections.size()
+  );
+  for (const auto &connection : std::ranges::reverse_view(inbound_connections)) {
+    buffer += std::format("    connection " ConnectionIDFormatter "\n", connection->identifier);
+  }
+  buffer += "======  end summary  ======\n";
+  logger->information("{}", buffer);
+}
+
 // thread call handlers
 static int  rpc_fd;
 static void handle_thread_call() {
-  int call_id;
+  ThreadCallID call_id;
   read(rpc_fd, &call_id, sizeof(call_id));
   switch (call_id) {
-  case ThreadCallIDExit:
+  case ThreadCallID::ThreadCallIDExit:
     loop = false;
     break;
-  default:
+  case ThreadCallID::ThreadCallIDReload:
+    key_manager->reload();
+    break;
+  case ThreadCallID::ThreadCallIDClearCache:
+    key_manager->clear();
+    break;
+  case ThreadCallID::ThreadCallIDSummary:
+    summary();
     break;
   }
 }
@@ -204,7 +223,7 @@ void inbound(inbound_parameter arguments) {
           }
           loggers->performance_logger->trace("start initializing a new connection");
           auto connection = std::make_unique<Connection>(socket);
-          logger->debug("initializing connection " ConnectionIDFormatter, connection->identifier);
+          logger->trace("initializing connection " ConnectionIDFormatter, connection->identifier);
 #define skip_procedure                                                                                       \
   logger->error(                                                                                             \
     "failed to call {} when initializing connection " ConnectionIDFormatter ", giving it up",                \
@@ -279,7 +298,7 @@ void inbound(inbound_parameter arguments) {
       loggers->performance_logger->trace("after call to handshake");
       if (handshake_result == ExecutionResult::Succeed) {
         // show remote hostname about connection
-        logger->information(
+        logger->debug(
           "new connection " ConnectionIDFormatter " to {}", connection->identifier, connection->key->hostname
         );
         // detach instance from local list
@@ -300,7 +319,7 @@ void inbound(inbound_parameter arguments) {
         // hand over to next stage
         //  decltype is used here just to silent the warning
         write(arguments.pipe_to_next, &connection, sizeof(decltype(connection)));
-        logger->debug(
+        logger->trace(
           "connection " ConnectionIDFormatter " handed over to next stage", connection->identifier
         );
       } else if (handshake_result == ExecutionResult::TryAgain) {

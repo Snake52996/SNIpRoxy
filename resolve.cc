@@ -11,10 +11,12 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <list>
 #include <memory>
 #include <netinet/in.h>
 #include <random>
+#include <ranges>
 #include <string_view>
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -48,19 +50,6 @@ static std::string network_binary_to_text(int family, sockaddr *address) {
   return {readable_address_buffer};
 }
 } // namespace
-
-static int  rpc_fd;
-static void handle_thread_call() {
-  int call_id;
-  read(rpc_fd, &call_id, sizeof(call_id));
-  switch (call_id) {
-  case ThreadCallIDExit:
-    loop = false;
-    break;
-  default:
-    break;
-  }
-}
 
 struct DNSEntry {
   time_t                     valid_before; // time before which may current entry be considered as valid
@@ -98,7 +87,7 @@ class DNSCache {
 
 public:
   // initialize the cache: load static cache from file
-  DNSCache(const std::filesystem::path &cache_file) : engine(std::random_device{}()) {
+  void load_static_cache(const std::filesystem::path &cache_file) {
     if (cache_file.empty()) {
       return;
     }
@@ -162,7 +151,7 @@ public:
         continue;
       }
       auto name = buffer.substr(start, end - start);
-      logger->debug("cache file: {} -> {}", name, address);
+      logger->trace("cache file: {} -> {}", name, address);
 
       // build internet address from human-readable text format
       //  we use ':' as identifier of a IPv6 address
@@ -195,10 +184,6 @@ public:
         logger->error("invalid address {}", address);
         continue;
       }
-      logger->debug(
-        "transformed address: {}",
-        network_binary_to_text(family, reinterpret_cast<sockaddr *>(binary_address.get()))
-      );
 
       // add this mapping to static cache
       this->static_cache.try_emplace(name);
@@ -206,6 +191,10 @@ public:
         0, family, SOCK_STREAM, IPPROTO_TCP, length, std::move(binary_address)
       );
     }
+  }
+
+  DNSCache(const std::filesystem::path &cache_file) : engine(std::random_device{}()) {
+    this->load_static_cache(cache_file);
   }
 
   // query address of specified domain name
@@ -266,6 +255,9 @@ public:
     // insert to dynamic cache and return a random one
     return this->get_random_address(&this->dynamic_cache.set(hostname, std::move(addresses)));
   }
+
+  // clear dynamic cache
+  void clear() { this->dynamic_cache.clear(); }
 };
 struct callback_parameter {
   decltype(resolve_list)::iterator iterator;
@@ -281,7 +273,7 @@ void proceed_connection(const DNSEntry *entry, decltype(resolve_list)::iterator 
 
   // print the address, just for logging/debugging purpose
   auto address = network_binary_to_text(entry->ai_family, reinterpret_cast<sockaddr *>(entry->ai_addr.get()));
-  logger->information(
+  logger->debug(
     "resolved for connection " ConnectionIDFormatter " : {} -> {}",
     connection->identifier,
     connection->key->hostname,
@@ -330,6 +322,44 @@ void callback(void *arg, int status, [[maybe_unused]] int timeouts, ares_addrinf
   ::free(arg);
 }
 
+std::function<void()>        reload_configuration;
+std::function<void()>        clear_cache;
+std::function<std::string()> summary_cache;
+
+static void summary() {
+  std::string buffer =
+    std::format("\n====== begin summary ======\n  {} connection(s) in this stage:\n", resolve_list.size());
+  for (const auto &connection : std::ranges::reverse_view(resolve_list)) {
+    buffer += std::format(
+      "    connection " ConnectionIDFormatter " to {}\n", connection->identifier, connection->key->hostname
+    );
+  }
+  buffer += summary_cache();
+  buffer += "======  end summary  ======\n";
+  logger->information("{}", buffer);
+}
+
+// thread call handlers
+static int  rpc_fd;
+static void handle_thread_call() {
+  ThreadCallID call_id;
+  read(rpc_fd, &call_id, sizeof(call_id));
+  switch (call_id) {
+  case ThreadCallID::ThreadCallIDExit:
+    loop = false;
+    break;
+  case ThreadCallID::ThreadCallIDReload:
+    reload_configuration();
+    break;
+  case ThreadCallID::ThreadCallIDClearCache:
+    clear_cache();
+    break;
+  case ThreadCallID::ThreadCallIDSummary:
+    summary();
+    break;
+  }
+}
+
 // entry of resolve
 void resolve(resolve_parameter arguments) {
   // configure loggers
@@ -355,7 +385,15 @@ void resolve(resolve_parameter arguments) {
   // build caches
   logger->trace("building static cache...");
   DNSCache cache(arguments.pinned_dns_cache);
+  uint32_t cache_hits{0};
+  uint32_t cache_misses{0};
   logger->trace("static cache built");
+
+  reload_configuration = [&cache, &arguments]() { cache.load_static_cache(arguments.pinned_dns_cache); };
+  clear_cache          = [&cache]() { cache.clear(); };
+  summary_cache        = [&cache_hits, &cache_misses]() -> std::string {
+    return std::format("  {} hits, {} misses on DNS cache\n", cache_hits, cache_misses);
+  };
 
   // setup watcher
   int epoll_descriptor; // to be initialized on next line
@@ -385,7 +423,7 @@ void resolve(resolve_parameter arguments) {
                    .events = (wait_read * EPOLLIN) | (wait_write * EPOLLOUT), // set events conditionally
                    .data   = {.fd = socket_fd}
       };
-      logger->debug(
+      logger->trace(
         "descriptor {} to be watched for {}{}", socket_fd, wait_read ? 'r' : '-', wait_write ? 'w' : '-'
       );
       // try to modify configuration of event lists first, this may save a syscall
@@ -430,13 +468,13 @@ void resolve(resolve_parameter arguments) {
     if (!resolve_list.empty()) {
       // only ask ares for timeout suggestion if there are queries undergoing
       ares_timeout(channel, nullptr, &timeout);
-      loggers->performance_logger->debug(
+      loggers->performance_logger->trace(
         "ares suggested timeout of {}.{:06d}", timeout.tv_sec, timeout.tv_usec
       );
       wait_milliseconds = timeout.tv_sec * 1000 + timeout.tv_usec / 1000;
       if (wait_milliseconds == 0) {
         wait_milliseconds = 1;
-        loggers->performance_logger->debug("timeout too short, rounded up to 1ms");
+        loggers->performance_logger->trace("timeout too short, rounded up to 1ms");
       }
     }
     // wait for events
@@ -447,7 +485,7 @@ void resolve(resolve_parameter arguments) {
     // we should call ares at least once in each loop
     bool ares_called = false;
     if (event_count == -1) {
-      logger->debug("epoll_wait reported error: {}", strerror(errno));
+      logger->trace("epoll_wait reported error: {}", strerror(errno));
       continue;
     }
     loggers->performance_logger->trace("{} events reported by epoll", event_count);
@@ -466,9 +504,11 @@ void resolve(resolve_parameter arguments) {
         if (cache_result != nullptr) {
           // cache hit
           loggers->performance_logger->debug("cache hit for {}", connection->key->hostname);
+          cache_hits++;
           proceed_connection(cache_result, resolve_list.begin());
         } else {
           loggers->performance_logger->debug("cache miss for {}", connection->key->hostname);
+          cache_misses++;
           auto callback_argument =
             reinterpret_cast<callback_parameter *>(::malloc(sizeof(callback_parameter)));
           std::construct_at(callback_argument, resolve_list.begin(), cache);

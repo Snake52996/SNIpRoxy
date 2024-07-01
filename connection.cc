@@ -2,6 +2,7 @@
 #include "common.hh"
 
 #include <atomic>
+#include <ctime>
 #include <fcntl.h>
 #include <string_view>
 #include <unistd.h>
@@ -30,7 +31,7 @@ auto transfer_helper(
   while (true) {
     // do the function all
     return_value = function(std::forward<Args>(args)...);
-    logger->debug(
+    logger->trace(
       "{} returned {}({}) on connection " ConnectionIDFormatter,
       function_name,
       return_value,
@@ -94,7 +95,7 @@ Side::~Side() {
   close(this->socket_descriptor);
 }
 
-std::pair<ExecutionResult, std::string> Side::recv(LogPP::Logger *logger) {
+std::tuple<ExecutionResult, ssize_t, std::string> Side::recv(LogPP::Logger *logger) {
   auto connection = get_associated_connection(this);
   auto explanation =
     this->is_remote ? "reading fresh data from remote server" : "reading fresh data from local client";
@@ -105,7 +106,7 @@ std::pair<ExecutionResult, std::string> Side::recv(LogPP::Logger *logger) {
       explanation,
       connection->identifier
     );
-    return {ExecutionResult::Failed, {}};
+    return {ExecutionResult::Failed, -EINVAL, {}};
   }
   constexpr size_t                 StepBufferSize = 0x4000;
   std::array<char, StepBufferSize> step_buffer;
@@ -123,12 +124,12 @@ std::pair<ExecutionResult, std::string> Side::recv(LogPP::Logger *logger) {
       step_buffer.size()
     );
     if (result.first == ExecutionResult::Failed) {
-      return {result.first, std::move(full_buffer)};
+      return {result.first, result.second, std::move(full_buffer)};
     }
     if (result.first != ExecutionResult::Succeed || result.second == 0) {
       // any data available must have been consumed when we reached here, set pending status
       this->pending_read = false;
-      return {result.first, std::move(full_buffer)};
+      return {result.first, result.second, std::move(full_buffer)};
     }
     full_buffer.append(step_buffer.data(), result.second);
   }
@@ -220,6 +221,10 @@ Connection::Connection(int socket_fd) : status(Status::Inbound), key(nullptr) {
 void Connection::set_remote_socket(int socket_descriptor) {
   this->side[SideName::Remote].socket_descriptor = socket_descriptor;
   set_nonblock(this->side[SideName::Remote].socket_descriptor);
+}
+void Connection::set_iterator(uint64_t iterator) {
+  this->link_time = time(nullptr);
+  this->iterator  = iterator;
 }
 
 ExecutionResult Connection::handshake(LogPP::Logger &logger) {

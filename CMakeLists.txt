@@ -26,3 +26,5 @@ find_package(LogPP REQUIRED)
 
 add_executable(snir connection.cc resolve.cc inbound.cc outbound.cc key_management.cc server.cc main.cc  thread_common.cc)
 target_link_libraries(snir PRIVATE GnuTLS::GnuTLS c-ares::cares ConfigurationsPP LogPP)
+install(TARGETS snir RUNTIME DESTINATION bin)
+install(CODE "execute_process(COMMAND setcap cap_net_bind_service+ep \$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/snir)")

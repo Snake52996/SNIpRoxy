@@ -4,8 +4,10 @@
 #include "thread_common.hh"
 
 #include <cerrno>
+#include <functional>
 #include <gnutls/gnutls.h>
 #include <list>
+#include <ranges>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -18,15 +20,23 @@ static loggers       *loggers = nullptr;
 // keep running
 static bool loop = true;
 
+std::function<void()> summary;
+
+// thread call handlers
 static int  rpc_fd;
 static void handle_thread_call() {
-  int call_id;
+  ThreadCallID call_id;
   read(rpc_fd, &call_id, sizeof(call_id));
   switch (call_id) {
-  case ThreadCallIDExit:
+  case ThreadCallID::ThreadCallIDExit:
     loop = false;
     break;
-  default:
+  case ThreadCallID::ThreadCallIDReload:
+    break; // nothing to reload
+  case ThreadCallID::ThreadCallIDClearCache:
+    break; // nothing to clear
+  case ThreadCallID::ThreadCallIDSummary:
+    summary();
     break;
   }
 }
@@ -55,6 +65,31 @@ void server(server_parameter arguments) {
   //  the connection control block must keep valid or we may encounter crashes
   decltype(server_connections)           closing_connections;
 
+  // set summary function
+  summary = [&server_connections]() {
+    auto        current_time = time(nullptr);
+    std::string buffer       = std::format(
+      "\n====== begin summary ======\n  {} connection(s) in this stage:\n", server_connections.size()
+    );
+    for (const auto &connection : std::ranges::reverse_view(server_connections)) {
+      auto seconds = current_time - connection->link_time;
+      buffer += std::format(
+        "    connection " ConnectionIDFormatter " to {}:\n"
+        "      {} bytes uploaded, {} bytes downloaded in {} seconds\n"
+        "      upload rate = {} Bps, download rate = {} Bps\n",
+        connection->identifier,
+        connection->key->hostname,
+        connection->upload_bytes,
+        connection->download_bytes,
+        seconds,
+        static_cast<double>(connection->upload_bytes) / seconds,
+        static_cast<double>(connection->download_bytes) / seconds
+      );
+    }
+    buffer += "======  end summary  ======\n";
+    logger->information("{}", buffer);
+  };
+
   logger->trace("setting up epoll...");
   int epoll_descriptor; // to be initialized on next line
   assert_syscall_return_value(epoll_descriptor, epoll_create1, EPOLL_CLOEXEC);
@@ -68,12 +103,26 @@ void server(server_parameter arguments) {
 
   static const auto shutdown_connection = [&server_connections,
                                            &closing_connections](Connection *connection) {
+    auto seconds = time(nullptr) - connection->link_time;
     closing_connections.splice(
       closing_connections.cbegin(),
       server_connections,
       u64_to_iterator<decltype(server_connections)::iterator>(connection->iterator)
     );
     connection->status = Connection::Status::ShutingDown;
+    logger->debug(
+      "closing connection " ConnectionIDFormatter " (local socket: {}, remote socket: {})\n"
+      "  established for {} seconds, {} bytes uploaded, {} bytes downloaded\n"
+      "  average upload rate: {}Bps, average download rate: {}Bps",
+      connection->identifier,
+      connection->side[Connection::SideName::Local].socket_descriptor,
+      connection->side[Connection::SideName::Remote].socket_descriptor,
+      seconds,
+      connection->upload_bytes,
+      connection->download_bytes,
+      static_cast<double>(connection->upload_bytes) / seconds,
+      static_cast<double>(connection->download_bytes) / seconds
+    );
   };
   // helper function to forward data
   //  return true for this connection is closed, false otherwise
@@ -81,21 +130,29 @@ void server(server_parameter arguments) {
     loggers->performance_logger->trace("before Side::recv");
     auto result = from->recv(logger);
     loggers->performance_logger->trace("after Side::recv");
-    if (result.first == ExecutionResult::Failed) {
+    if (std::get<0>(result) == ExecutionResult::Failed) {
       // fatal error encountered, shutdown the connection
       shutdown_connection(connection);
       return true;
     }
     // input collected, transmit to other side
-    if (!result.second.empty()) {
+    if (!std::get<2>(result).empty()) {
+      // count bytes transferred
+      if (from->is_remote) {
+        connection->download_bytes += std::get<2>(result).size();
+      } else {
+        connection->upload_bytes += std::get<2>(result).size();
+      }
+      // log transmission
       global_loggers->transport_logger->information(
         "connection " ConnectionIDFormatter ": proxy <-- {:5d} bytes --  {}",
         connection->identifier,
-        result.second.size(),
+        std::get<2>(result).size(),
         side_names[from->is_remote]
       );
+      // forward to other side
       loggers->performance_logger->trace("before Side::send(data)");
-      auto return_value = to->send(logger, result.second);
+      auto return_value = to->send(logger, std::get<2>(result));
       loggers->performance_logger->trace("after Side::send(data)");
       if (return_value.first == ExecutionResult::Failed) {
         // fatal error encountered, shutdown the connection
@@ -103,7 +160,7 @@ void server(server_parameter arguments) {
         return true;
       }
     }
-    if (result.first == ExecutionResult::Succeed) {
+    if (std::get<0>(result) == ExecutionResult::Succeed || std::get<1>(result) == 0) {
       // EOF reached, shutdown the connection
       shutdown_connection(connection);
       return true;
@@ -117,7 +174,7 @@ void server(server_parameter arguments) {
     auto event_count = epoll_wait(epoll_descriptor, events.data(), events.size(), -1);
     loggers->performance_logger->trace("returned from epoll_wait");
     if (event_count == -1) {
-      logger->debug("epoll_wait reported error: {}", strerror(errno));
+      logger->trace("epoll_wait reported error: {}", strerror(errno));
       continue;
     }
     for (decltype(event_count) i = 0; i < event_count; i++) {
@@ -129,11 +186,11 @@ void server(server_parameter arguments) {
         // accept established connection
         Connection *connection;
         read(arguments.pipe_from_last, &connection, sizeof(decltype(connection)));
-        logger->debug("received connection " ConnectionIDFormatter, connection->identifier);
+        logger->trace("received connection " ConnectionIDFormatter, connection->identifier);
         // attach it into the list
         server_connections.emplace_front(connection);
-        connection->iterator = iterator_to_u64(server_connections.begin());
-        const auto give_up   = [connection, &server_connections]() {
+        connection->set_iterator(iterator_to_u64(server_connections.begin()));
+        const auto give_up = [connection, &server_connections]() {
           logger->error(
             "failed to register connection " ConnectionIDFormatter ", to epoll, shuting it down",
             connection->identifier
@@ -159,7 +216,6 @@ void server(server_parameter arguments) {
       // when control flow reaches here, events[i] corresponds to a connection
       auto this_side  = reinterpret_cast<Side *>(events[i].data.ptr);
       auto connection = get_associated_connection(this_side);
-      auto iterator   = u64_to_iterator<decltype(server_connections)::iterator>(connection->iterator);
       if (connection->status == Connection::Status::ShutingDown) {
         // it is on its shuting down procedure, do not touch it
         continue;

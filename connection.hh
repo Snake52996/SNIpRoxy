@@ -8,6 +8,7 @@
 #include <gnutls/gnutls.h>
 #include <memory>
 #include <string>
+#include <tuple>
 
 #if 0 // will be very happy to have a custom formatter to simplify the output
 #include <format>
@@ -52,13 +53,16 @@ struct Side {
   ~Side();
 
   // unified checker for is there are data to be written
-  inline bool                             pending_write() const { return !this->pending_data.empty(); }
+  inline bool pending_write() const { return !this->pending_data.empty(); }
   // receive data from this side
-  std::pair<ExecutionResult, std::string> recv(LogPP::Logger *logger);
+  //  return execution result, last return value from GnuTLS and the data read
+  std::tuple<ExecutionResult, ssize_t, std::string> recv(LogPP::Logger *logger);
   // send pending data to this side
-  std::pair<ExecutionResult, ssize_t>     send(LogPP::Logger *logger);
+  //  return execution result and total bytes transferred
+  std::pair<ExecutionResult, ssize_t>               send(LogPP::Logger *logger);
   // send fresh data to this side
-  std::pair<ExecutionResult, ssize_t>     send(LogPP::Logger *logger, const std::string &data);
+  //  return execution result and total bytes transferred
+  std::pair<ExecutionResult, ssize_t>               send(LogPP::Logger *logger, const std::string &data);
 };
 
 // control block for connection(s)
@@ -81,7 +85,12 @@ struct Connection {
 
   std::array<Side, 2> side; // sides of this connection
 
-  uint64_t iterator; // iterator to the list holds this connection, only available in server stage
+  uint64_t iterator;     // iterator to the list holds this connection, only available in server stage
+  time_t   link_time{0}; // timestamp when this connection is attached onto this link
+
+  // these counters count only real data transmitted, handshake/retransmission etc. not taken into account
+  uint32_t download_bytes{0}; // bytes downloaded, i.e. transmitted from remote server to local client
+  uint32_t upload_bytes{0};   // bytes uploaded, i.e. transmitted from local client to remote server
 
   Connection(int socket_fd);
   Connection(const Connection &)            = delete;
@@ -90,6 +99,7 @@ struct Connection {
   Connection &operator=(Connection &&)      = delete;
 
   void            set_remote_socket(int socket_descriptor);
+  void            set_iterator(uint64_t iterator);
   // do handshake in non-blocking mode according to current state
   ExecutionResult handshake(LogPP::Logger &logger);
 };

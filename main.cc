@@ -3,6 +3,7 @@
 #include "outbound.hh"
 #include "resolve.hh"
 #include "server.hh"
+#include "thread_common.hh"
 
 #include <configuration.hh>
 #include <logpp.hh>
@@ -124,11 +125,18 @@ std::vector<thread_control_block> threads;
 loggers *global_loggers;
 
 void signal_handler(int signal) {
-  if (signal == SIGINT) {
-    int call_id = ThreadCallIDExit;
-    for (auto &thread : threads) {
-      write(thread.rcp_descriptor, &call_id, sizeof(call_id));
-    }
+  ThreadCallID call_id;
+  if (signal == SIGINT || signal == SIGQUIT || signal == SIGTERM) {
+    call_id = ThreadCallID::ThreadCallIDExit;
+  } else if (signal == SIGHUP) {
+    call_id = ThreadCallID::ThreadCallIDReload;
+  } else if (signal == SIGIO) {
+    call_id = ThreadCallID::ThreadCallIDSummary;
+  } else if (signal == SIGUSR1) {
+    call_id = ThreadCallID::ThreadCallIDClearCache;
+  }
+  for (auto &thread : threads) {
+    write(thread.rcp_descriptor, &call_id, sizeof(call_id));
   }
 }
 
@@ -187,7 +195,13 @@ int main(int argc, char **argv) {
     threads.emplace_back(rpc_pipes[1], server, parameter);
   }
 
+  // handle signals
   signal(SIGINT, signal_handler);
+  signal(SIGQUIT, signal_handler);
+  signal(SIGTERM, signal_handler);
+  signal(SIGHUP, signal_handler);
+  signal(SIGIO, signal_handler);
+  signal(SIGUSR1, signal_handler);
   for (auto &thread : threads) {
     thread.thread.join();
   }
