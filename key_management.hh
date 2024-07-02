@@ -37,10 +37,10 @@ public:
 private:
   static constexpr size_t MaxKeypair = 128;
 
-  const std::filesystem::path                                  &key_path;
-  gnutls_x509_crt_t                                             ca_cert{nullptr};
-  gnutls_x509_privkey_t                                         ca_key{nullptr};
-  Cache<std::string_view, std::shared_ptr<KeyPair>, MaxKeypair> key_pairs;
+  const std::filesystem::path                             &key_path;
+  gnutls_x509_crt_t                                        ca_cert{nullptr};
+  gnutls_x509_privkey_t                                    ca_key{nullptr};
+  Cache<std::string, std::shared_ptr<KeyPair>, MaxKeypair> key_pairs;
 
   KeyManager(const std::filesystem::path &key_path);
 };

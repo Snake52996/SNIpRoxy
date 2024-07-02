@@ -266,7 +266,7 @@ KeyManager &KeyManager::get_manager(const std::filesystem::path &key_path) {
 
 std::shared_ptr<KeyPair> KeyManager::get_key_pair(std::string_view hostname) {
   return this->key_pairs.get(
-    hostname,
+    std::string(hostname),
     [](const std::shared_ptr<KeyPair> &key_pair) -> bool {
       // check if this certificate is still valid at this moment
       gnutls_x509_crt_t cert;
@@ -297,6 +297,9 @@ std::shared_ptr<KeyPair> KeyManager::get_key_pair(std::string_view hostname) {
   );
 }
 void KeyManager::reload() {
+  // since CA keypair may be reloaded, we should clear cache to avoid mismatching
+  this->key_pairs.clear();
+
   // check if the directory exist or is usable
   logger->trace("constructing key manager on path {}", this->key_path.c_str());
   auto directory_status = std::filesystem::status(this->key_path);
@@ -347,11 +350,9 @@ void KeyManager::reload() {
   //  anyway, load them in
   gnutls_datum_t buffer{nullptr, 0};
   certificate_path >> buffer;
-  assert_gnutls_call(gnutls_x509_crt_init, &this->ca_cert);
   assert_gnutls_call(gnutls_x509_crt_import, this->ca_cert, &buffer, GNUTLS_X509_FMT_PEM);
   // no need to free here: operator>> does that for us
   private_key_path >> buffer;
-  assert_gnutls_call(gnutls_x509_privkey_init, &this->ca_key);
   assert_gnutls_call(gnutls_x509_privkey_import, this->ca_key, &buffer, GNUTLS_X509_FMT_PEM);
   ::free(buffer.data);
   buffer.data = nullptr;
@@ -373,4 +374,9 @@ void KeyManager::reload() {
 }
 void KeyManager::clear() { this->key_pairs.clear(); }
 
-KeyManager::KeyManager(const std::filesystem::path &key_path) : key_path(key_path) { this->reload(); }
+KeyManager::KeyManager(const std::filesystem::path &key_path) : key_path(key_path) {
+  // initializes shall be done here
+  assert_gnutls_call(gnutls_x509_crt_init, &this->ca_cert);
+  assert_gnutls_call(gnutls_x509_privkey_init, &this->ca_key);
+  this->reload();
+}

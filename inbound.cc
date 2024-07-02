@@ -164,19 +164,33 @@ void inbound(inbound_parameter arguments) {
   int listen_socket; // to be initialized on next line
   assert_syscall_return_value(listen_socket, socket, AF_INET, SOCK_STREAM, 0);
   set_nonblock(listen_socket);
-  // hardcode server address as 127.0.0.1(localhost) and port 443(https)
+  // hardcode server address as 127.0.0.1(localhost)
   sockaddr_in server_address;
   memset(&server_address, '\0', sizeof(server_address));
   server_address.sin_family      = AF_INET;
   server_address.sin_addr.s_addr = inet_addr("127.0.0.1");
-  server_address.sin_port        = htons(443);
+#ifdef USING_SANITIZER
+  // if sanitize is used, listen on any available port (does not require capability)
+  server_address.sin_port = htons(0);
+#else
+  server_address.sin_port = htons(443);
+#endif
   // allow reuse of socket address so that restarting the server will not fail due to address in use
-  static const int optval        = 1;
+  static const int optval = 1;
   setsockopt(listen_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(int));
   // assign address and listen for connections
   assert_syscall(bind, listen_socket, reinterpret_cast<sockaddr *>(&server_address), sizeof(server_address));
   assert_syscall(listen, listen_socket, 1024);
-  logger->trace("server is not listening");
+#ifdef USING_SANITIZER
+  // get port number on which server is listening
+  sockaddr_storage address;
+  socklen_t        address_length = sizeof(address);
+  assert_syscall(getsockname, listen_socket, reinterpret_cast<sockaddr *>(&address), &address_length);
+  auto port = ntohs(reinterpret_cast<sockaddr_in *>(&address)->sin_port);
+  logger->information("server is now listening on port {}", port);
+#else
+  logger->trace("server is now listening");
+#endif
 
   logger->trace("setting up multiplexer...");
   int epoll_descriptor; // to be initialized on next line

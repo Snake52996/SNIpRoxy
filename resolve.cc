@@ -88,6 +88,9 @@ class DNSCache {
 public:
   // initialize the cache: load static cache from file
   void load_static_cache(const std::filesystem::path &cache_file) {
+    // clear static cache first
+    this->static_cache.clear();
+
     if (cache_file.empty()) {
       return;
     }
