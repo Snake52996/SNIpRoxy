@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta name="charset" charset="utf-8">
+  <title>SNIpRoxy</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    .circle {
+      width: 400px;
+      height: 400px;
+      border-radius: 50%;
+      background-color: #fff;
+      border: 15px solid #7986CB;
+      clip-path: polygon(0 0, 100% 0, 100% 100%, 75% 80%, 25% 80%, 0 100%);
+    }
+
+    .pointer {
+      position: relative;
+      width: 8px;
+      height: 205px;
+      background: #64B5F6;
+      transform-origin: center top;
+      left: calc(50% - 4px);
+      top: 50%;
+      clip-path: polygon(0 -4px, 100% -4px, 50% 100%);
+    }
+
+    .head {
+      position: relative;
+      width: 8px;
+      height: 8px;
+      background: #64B5F6;
+      border-radius: 50%;
+      top: -4px;
+    }
+
+    .text {
+      position: relative;
+      width: 100%;
+      text-align: center;
+      top: 30px;
+      font-size: 40px;
+      font-family: 'LXGW WenKai Screen';
+    }
+  </style>
+  <style>
+    main {
+      display: flex;
+    }
+
+    main>div {
+      width: max-content;
+      margin: 48px;
+    }
+
+    .title {
+      font-family: 'LXGW WenKai Screen';
+      font-size: 30px;
+      width: 100%;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <div id="download">
+      <div class="title">Download</div>
+    </div>
+    <div id="upload">
+      <div class="title">Upload</div>
+    </div>
+  </main>
+  <script>
+    const angle_low = 41;
+    const angle_high = 319;
+    const speed = 4;
+    class meter {
+      #minimum;
+      #maximum;
+      #pointer;
+      #text;
+      #target_degree;
+      #current_degree;
+      constructor(parent, minimum, maximum) {
+        const background = document.createElement("div");
+        background.classList.add("circle");
+        const pointer = document.createElement("div");
+        pointer.classList.add("pointer");
+        const center = document.createElement("div");
+        center.classList.add("head");
+        const text = document.createElement("div");
+        text.classList.add("text");
+        pointer.appendChild(center);
+        background.appendChild(pointer);
+        background.appendChild(text);
+        parent.appendChild(background);
+        this.#maximum = maximum;
+        this.#minimum = minimum;
+        this.#pointer = pointer;
+        this.#text = text;
+        this.#target_degree = angle_low;
+        this.#degree = angle_low;
+      }
+
+      set_value(value) {
+        return new Promise((resolve, reject) => {
+          if (value > this.#maximum || value < this.#minimum) {
+            reject("invalid value");
+          }
+          const ratio = (value - this.#minimum) / (this.#maximum - this.#minimum);
+          this.#target_degree = ratio * (angle_high - angle_low) + angle_low;
+          const animate = setInterval(() => {
+            const step = this.#degree > this.#target_degree ? -speed : speed;
+            let target = this.#degree + step;
+            if ((target - this.#target_degree) * (this.#degree - this.#target_degree) < 0) {
+              target = this.#target_degree;
+            }
+            if (Math.abs(target - this.#target_degree) <= 1e-4) {
+              target = this.#target_degree;
+            }
+            this.#degree = target;
+            if (target == this.#target_degree) {
+              clearInterval(animate);
+              resolve();
+            }
+          }, 5);
+        });
+      }
+      set_text(value) {
+        this.#text.innerText = value;
+      }
+
+      get minimum() { return this.#minimum; }
+      get maximum() { return this.#maximum; }
+      get #degree() { return this.#current_degree; }
+      set #degree(value) {
+        this.#pointer.style.transform = `rotate(${value}deg)`;
+        this.#current_degree = value;
+      }
+
+      async startup() {
+        await this.set_value(this.#maximum);
+        await this.set_value(this.#minimum);
+      }
+
+    }
+  </script>
+  <script>
+    window.addEventListener("load", () => {
+      const download = new meter(document.getElementById("download"), 0, 17.5);
+      const upload = new meter(document.getElementById("upload"), 0, 17.5);
+      download.startup().then(() => { download.set_text("0 Bps"); });
+      upload.startup().then(() => { upload.set_text("0 Bps"); });
+
+      const websocket = new WebSocket("ws://localhost:15477");
+      websocket.addEventListener("message", function (event) {
+        const data = JSON.parse(event.data);
+        download.set_value(Math.max(0, Math.log(data.download + 1e-6)));
+        download.set_text(`${data.download} Bps`);
+        upload.set_value(Math.max(0, Math.log(data.upload + 1e-6)));
+        upload.set_text(`${data.upload} Bps`);
+      });
+    });
+  </script>
+</body>
+
+</html>

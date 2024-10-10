@@ -34,7 +34,11 @@ find_package(c-ares REQUIRED)
 find_package(ConfigurationsPP REQUIRED)
 find_package(LogPP REQUIRED)
 
-add_executable(snir connection.cc resolve.cc inbound.cc outbound.cc key_management.cc server.cc main.cc  thread_common.cc)
+# prepare embedded webpage
+add_custom_command(OUTPUT webpage.hh COMMAND xxd -i -n webpage "${CMAKE_CURRENT_LIST_DIR}/webpage.html" ">" "${CMAKE_CURRENT_BINARY_DIR}/webpage.hh" DEPENDS "${CMAKE_CURRENT_LIST_DIR}/webpage.html")
+
+add_executable(snir connection.cc resolve.cc inbound.cc outbound.cc key_management.cc server.cc backend.cc main.cc thread_common.cc webpage.hh)
+target_include_directories(snir PUBLIC "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(snir PRIVATE GnuTLS::GnuTLS c-ares::cares ConfigurationsPP LogPP)
 
 if(${install_disabled})

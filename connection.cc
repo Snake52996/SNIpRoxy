@@ -1,4 +1,5 @@
 #include "connection.hh"
+#include "backend.hh"
 #include "common.hh"
 
 #include <atomic>
@@ -198,6 +199,14 @@ std::pair<ExecutionResult, ssize_t> Side::send(LogPP::Logger *logger, const std:
       result.second,
       side_names[this->is_remote]
     );
+    // record bytes we uploaded/downloaded
+    if (this->is_remote) {
+      // if we are sending to remote server, we are uploading
+      bytes_uploaded += result.second;
+    } else {
+      // if we are sending to local client, we are downloading
+      bytes_downloaded += result.second;
+    }
   }
   // successfully transmitted all data supplied
   return {ExecutionResult::Succeed, data.size()};

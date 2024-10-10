@@ -1,3 +1,4 @@
+#include "backend.hh"
 #include "common.hh"
 #include "inbound.hh"
 #include "outbound.hh"
@@ -193,6 +194,14 @@ int main(int argc, char **argv) {
     pipe(rpc_pipes);
     server_parameter parameter{{rpc_pipes[0], loggers}, outbound_to_server_pipes[0]};
     threads.emplace_back(rpc_pipes[1], server, parameter);
+  }
+
+  {
+    // launch side stage: backend, data provider of dashboard
+    int rpc_pipes[2];
+    pipe(rpc_pipes);
+    backend_parameter parameter{{rpc_pipes[0], loggers}};
+    threads.emplace_back(rpc_pipes[1], backend, parameter);
   }
 
   // handle signals
