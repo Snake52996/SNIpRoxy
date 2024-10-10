@@ -114,6 +114,10 @@
           }
           const ratio = (value - this.#minimum) / (this.#maximum - this.#minimum);
           this.#target_degree = ratio * (angle_high - angle_low) + angle_low;
+          if (this.#degree === this.#target_degree) {
+            resolve();
+            return;
+          }
           const animate = setInterval(() => {
             const step = this.#degree > this.#target_degree ? -speed : speed;
             let target = this.#degree + step;
@@ -132,7 +136,9 @@
         });
       }
       set_text(value) {
-        this.#text.innerText = value;
+        if (this.#text.innerText !== value) {
+          this.#text.innerText = value;
+        }
       }
 
       get minimum() { return this.#minimum; }
@@ -151,11 +157,16 @@
     }
   </script>
   <script>
-    window.addEventListener("load", () => {
+                window.addEventListener("load", async () => {
       const download = new meter(document.getElementById("download"), 0, 17.5);
       const upload = new meter(document.getElementById("upload"), 0, 17.5);
-      download.startup().then(() => { download.set_text("0 Bps"); });
-      upload.startup().then(() => { upload.set_text("0 Bps"); });
+                function startup() {
+                  return Promise.all([
+                    download.startup().then(() => { download.set_text("0 Bps"); }),
+                    upload.startup().then(() => { upload.set_text("0 Bps"); })
+                  ]);
+                }
+                await startup();
 
       const websocket = new WebSocket("ws://localhost:15477");
       websocket.addEventListener("message", function (event) {
